@@ -3,6 +3,7 @@ Tkinter + asyncio RSS reader for Thanh Nien.
 """
 import asyncio
 import threading
+import webbrowser
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from io import BytesIO
@@ -21,6 +22,7 @@ from tkinter import ttk, messagebox
 class Article:
     title: str
     link: str
+    categories: List[str]
 
 
 class AsyncioThread(threading.Thread):
@@ -49,7 +51,7 @@ class NewsReaderApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Thanh Nien RSS Reader")
-        self.root.geometry("1100x700")
+        self.root.geometry("1150x750")
 
         self.async_thread = AsyncioThread()
         self.async_thread.start()
@@ -64,6 +66,8 @@ class NewsReaderApp:
 
         self.articles: List[Article] = []
         self.image_refs: List[ImageTk.PhotoImage] = []
+        self.current_article_link: Optional[str] = None
+        self.current_categories: List[str] = []
 
         self._build_layout()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -97,9 +101,10 @@ class NewsReaderApp:
         # Left list of article titles
         left_frame = ttk.Frame(main_frame)
         left_frame.pack(side=tk.LEFT, fill=tk.Y)
-        ttk.Label(left_frame, text="Danh sách bài viết", font=("Arial", 12, "bold")).pack(anchor=tk.W)
-        self.listbox = tk.Listbox(left_frame, width=45, height=30)
-        self.listbox.pack(side=tk.LEFT, fill=tk.Y, expand=False, pady=(5, 0))
+        ttk.Label(left_frame, text="Danh sách bài viết", font=("Segoe UI", 12, "bold")).pack(anchor=tk.W)
+        self.listbox = tk.Listbox(left_frame, width=48, height=30, activestyle="none")
+        self.listbox.pack(side=tk.LEFT, fill=tk.Y, expand=False, pady=(5, 0), ipady=6)
+        self.listbox.config(font=("Segoe UI", 11), selectbackground="#cde4ff", selectforeground="#000000")
         self.listbox.bind("<<ListboxSelect>>", self.on_article_selected)
         list_scroll = ttk.Scrollbar(left_frame, orient=tk.VERTICAL, command=self.listbox.yview)
         list_scroll.pack(side=tk.RIGHT, fill=tk.Y)
@@ -108,11 +113,18 @@ class NewsReaderApp:
         # Right content view
         right_frame = ttk.Frame(main_frame)
         right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(15, 0))
-        ttk.Label(right_frame, text="Nội dung bài viết", font=("Arial", 12, "bold")).pack(anchor=tk.W)
+        ttk.Label(right_frame, text="Nội dung bài viết", font=("Segoe UI", 12, "bold")).pack(anchor=tk.W)
+
+        meta_frame = ttk.Frame(right_frame)
+        meta_frame.pack(fill=tk.X, pady=(6, 0))
+        self.category_var = tk.StringVar(value="Danh mục: -")
+        ttk.Label(meta_frame, textvariable=self.category_var, font=("Segoe UI", 10, "italic")).pack(side=tk.LEFT)
+        self.link_button = ttk.Button(meta_frame, text="Mở bài gốc", command=self.open_current_article, state=tk.DISABLED)
+        self.link_button.pack(side=tk.RIGHT)
 
         content_container = ttk.Frame(right_frame)
         content_container.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
-        self.content_text = tk.Text(content_container, wrap=tk.WORD)
+        self.content_text = tk.Text(content_container, wrap=tk.WORD, font=("Segoe UI", 12), spacing3=8, padx=8, pady=8)
         self.content_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         content_scroll = ttk.Scrollbar(content_container, orient=tk.VERTICAL, command=self.content_text.yview)
         content_scroll.pack(side=tk.RIGHT, fill=tk.Y)
@@ -155,17 +167,22 @@ class NewsReaderApp:
         for item_el in root.findall(".//item"):
             title = item_el.findtext("title", default="(Không tiêu đề)")
             link = item_el.findtext("link", default="")
+            categories = [cat.text.strip() for cat in item_el.findall("category") if cat.text]
             if link:
-                items.append(Article(title=title, link=link))
+                items.append(Article(title=title, link=link, categories=categories))
         return items
 
     def populate_list(self, articles: List[Article]) -> None:
         self.articles = articles
         self.listbox.delete(0, tk.END)
         for art in articles:
-            self.listbox.insert(tk.END, art.title)
+            self.listbox.insert(tk.END, f"• {art.title}")
         self.content_text.delete("1.0", tk.END)
         self.image_refs.clear()
+        self.category_var.set("Danh mục: -")
+        self.current_article_link = None
+        self.current_categories = []
+        self.link_button.config(state=tk.DISABLED)
         if not articles:
             self.content_text.insert(tk.END, "Không tìm thấy bài viết nào.")
 
@@ -174,6 +191,12 @@ class NewsReaderApp:
             return
         index = self.listbox.curselection()[0]
         article = self.articles[index]
+        self.current_article_link = article.link
+        self.current_categories = article.categories
+        self.category_var.set(
+            f"Danh mục: {', '.join(article.categories) if article.categories else 'Không rõ danh mục'}"
+        )
+        self.link_button.config(state=tk.NORMAL if article.link else tk.DISABLED)
         self.content_text.delete("1.0", tk.END)
         self.content_text.insert(tk.END, "Đang tải nội dung bài viết...")
 
@@ -219,7 +242,13 @@ class NewsReaderApp:
         self.content_text.delete("1.0", tk.END)
         self.image_refs.clear()
         self.content_text.insert(tk.END, f"{title}\n\n", ("title",))
-        self.content_text.tag_config("title", font=("Arial", 14, "bold"))
+        self.content_text.tag_config("title", font=("Segoe UI", 14, "bold"))
+
+        category_label = ", ".join(self.current_categories) if self.current_categories else "Không rõ danh mục"
+        self.content_text.insert(tk.END, f"Danh mục: {category_label}\n", ("meta",))
+        self.content_text.insert(tk.END, f"Liên kết gốc: {self.current_article_link}\n\n", ("link",))
+        self.content_text.tag_config("meta", font=("Segoe UI", 10, "italic"))
+        self.content_text.tag_config("link", foreground="#1a73e8", underline=1)
 
         img_iter = iter(images)
         for idx, para in enumerate(paragraphs):
@@ -249,6 +278,10 @@ class NewsReaderApp:
             new_size = (int(image.width * ratio), int(image.height * ratio))
             image = image.resize(new_size, Image.LANCZOS)
         return ImageTk.PhotoImage(image)
+
+    def open_current_article(self) -> None:
+        if self.current_article_link:
+            webbrowser.open(self.current_article_link)
 
     def on_close(self) -> None:
         self.async_thread.shutdown()
